@@ -458,6 +458,48 @@ def handle_channel_finish_command(ctx: BotContext, post: dict[str, Any], data: d
         _finalize_session(ctx, session, forced=True)
 
 
+def handle_channel_list_command(ctx: BotContext, post: dict[str, Any], data: dict[str, Any]) -> None:
+    root_id = (post.get("root_id") or "").strip()
+    if not root_id:
+        return
+    if (post.get("message") or "").strip().lower() != "/list":
+        return
+
+    channel_id = post.get("channel_id") or data.get("channel_id")
+    if not channel_id:
+        return
+
+    session = ctx.session_store.get_by_root(root_id)
+    if not session:
+        _post_in_thread(
+            ctx,
+            root_id,
+            channel_id,
+            "По этому треду нет активного голосования.",
+        )
+        return
+
+    voted_labels = [
+        _mention_label(session.username_by_id, uid)
+        for uid in session.voter_ids
+        if uid in session.votes
+    ]
+    pending_labels = [
+        _mention_label(session.username_by_id, uid)
+        for uid in session.voter_ids
+        if uid not in session.votes
+    ]
+    n = len(session.voter_ids)
+    got = len(voted_labels)
+    lines = [
+        f"**Статус голосования** ({got}/{n}):",
+        "**Уже проголосовали:** "
+        + (", ".join(voted_labels) if voted_labels else "—"),
+        "**Ждём:** " + (", ".join(pending_labels) if pending_labels else "никого, все внесли оценку."),
+    ]
+    _post_in_thread(ctx, root_id, channel_id, "\n".join(lines))
+
+
 def handle_channel_reset_command(ctx: BotContext, post: dict[str, Any], data: dict[str, Any]) -> None:
     root_id = (post.get("root_id") or "").strip()
     if not root_id:
@@ -753,6 +795,7 @@ def handle_posted_message(ctx: BotContext, message: str) -> None:
             if (post.get("root_id") or "").strip():
                 handle_channel_finish_command(ctx, post, data)
                 handle_channel_reset_command(ctx, post, data)
+                handle_channel_list_command(ctx, post, data)
                 handle_channel_agree_command(ctx, post, data)
             else:
                 handle_channel_root_post(ctx, post, data)
