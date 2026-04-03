@@ -19,12 +19,6 @@ log = logging.getLogger(__name__)
 
 _TEAM_CHANNEL_TYPES = frozenset({"O", "P", "G"})
 
-_VOTE_FORMAT_HINT = (
-    "**Одно число** в треде: целое или дробное, разделитель **точка или запятая** (`3.5` или `3,5`). "
-    "Допустимый шаг **0,05** (как `2`, `2.5`, `2.95`); лишняя точность округляется **вверх** к шагу "
-    "(например `2.93` → `2.95`, `1,00001` → `1,05`). Без текста кроме числа."
-)
-
 
 @dataclass
 class BotContext:
@@ -191,10 +185,8 @@ def _send_dm_invites(ctx: BotContext, session: PlanningSession) -> None:
     failed: list[str] = []
     permalink = _thread_permalink(ctx, session.team_id, session.root_post_id)
     dm_text = (
-        "--------------------------------\n\n"
-        f"‼️ [Тут]({permalink}) нужна оценка по {session.jira_url}.\n\n"
-        + _VOTE_FORMAT_HINT
-        + "\n\n--------------------------------"
+        f"‼️ [Тут]({permalink}) запущено голосование по оценке тикета: {session.jira_url}.\n\n"
+        "Ответь реплаем к этому сообщению оценкой в виде одного числа."
     )
     for uid in session.voter_ids:
         try:
@@ -307,11 +299,7 @@ def handle_channel_root_post(ctx: BotContext, post: dict[str, Any], data: dict[s
 
     mentions = " ".join(_mention_label(username_by_id, uid) for uid in voter_ids)
     welcome = (
-        f"{mentions} жду оценок по тикету {jira_url}. "
-        "**В ЛС от бота** — ссылка на этот тред и инструкция; оценку пришлите **ответом в треде на сообщение бота** (не в корень ЛС). "
-        "Голос в канале в тред не присылайте — не засчитывается.\n"
-        "Досрочно подвести итог по уже пришедшим голосам может **автор этого поста**, написав в этом треде `/finish`.\n"
-        "Записать согласованные SP в Jira (и оценки времени) может автор командой `/agree 3` или `/agree 0,5` в этом треде (если настроен `JIRA_TOKEN`)."
+        f"{mentions} жду в личку оценок по тикету {jira_url}.\n"
     )
     _post_in_thread(ctx, post_id, channel_id, welcome)
 
@@ -414,7 +402,7 @@ def handle_channel_finish_command(ctx: BotContext, post: dict[str, Any], data: d
             ctx,
             root_id,
             channel_id,
-            "Команду `/finish` может отправить только автор поста, с которого запущено голосование.",
+            "Команду `/finish` может отправить только тот, кто изначально запустил голосование.",
         )
         return
 
@@ -454,7 +442,7 @@ def handle_channel_agree_command(ctx: BotContext, post: dict[str, Any], data: di
             ctx,
             root_id,
             channel_id,
-            "Команду `/agree` может отправить только автор поста, с которого запущено голосование.",
+            "Команду `/agree` может отправить только тот, кто изначально запустил голосование.",
         )
         return
 
@@ -506,8 +494,7 @@ def handle_channel_agree_command(ctx: BotContext, post: dict[str, Any], data: di
             ctx,
             root_id,
             channel_id,
-            f"В **Jira** [{issue_key}]({jira_url}): Story Points = **{sp_disp}**, "
-            f"original / remaining estimate = **{wh_disp}** ч (1 SP = {ctx.jira.hours_per_sp} ч).",
+            f"Проставил задаче [{issue_key}]({jira_url}) оценку в {sp_disp} SP ({wh_disp} ч)."
         )
     else:
         _post_in_thread(
@@ -536,7 +523,6 @@ def handle_dm_post(ctx: BotContext, post: dict[str, Any]) -> None:
                 channel_id,
                 "Для каждой задачи у меня отдельное сообщение-приглашение. "
                 "Открой **тред** (Reply) у нужного приглашения и пришли там оценку. "
-                + _VOTE_FORMAT_HINT
                 + " В корень чата не пиши — не засчитается.",
             )
         return
@@ -558,7 +544,7 @@ def handle_dm_post(ctx: BotContext, post: dict[str, Any]) -> None:
             ctx.driver,
             channel_id,
             actual_root,
-            "Нужно одно число в этом треде. " + _VOTE_FORMAT_HINT,
+            "Нужно одно число в этом треде."
         )
         return
 
