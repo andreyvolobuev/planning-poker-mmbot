@@ -286,34 +286,30 @@ def handle_dm_post(ctx: BotContext, post: dict[str, Any]) -> None:
     if not user_id or user_id == ctx.bot_id:
         return
 
-    session = ctx.session_store.session_for_voter(user_id)
-    if not session:
-        return
-
     channel_id = post.get("channel_id")
     if not channel_id:
         return
 
-    expected_root = session.dm_invite_root_by_user.get(user_id)
-    if not expected_root:
-        _post_dm_top_level(
-            ctx.driver,
-            channel_id,
-            "Сейчас нет активного приглашения с оценкой в этом чате. "
-            "Если только что стартовали раунд — подождите сообщение от бота со ссылкой на тикет.",
-        )
+    actual_root = (post.get("root_id") or "").strip()
+
+    if not actual_root:
+        if ctx.session_store.user_has_pending_dm_invite(user_id):
+            _post_dm_top_level(
+                ctx.driver,
+                channel_id,
+                "Для каждой задачи у меня отдельное сообщение-приглашение. "
+                "Открой **тред** (Reply) у нужного приглашения и пришли там **одно целое число**. "
+                "В корень чата число не засчитывается.",
+            )
         return
 
-    actual_root = (post.get("root_id") or "").strip()
-    thread_for_reply = actual_root or expected_root
-
-    if actual_root != expected_root:
+    session = ctx.session_store.session_for_dm_invite_thread(user_id, actual_root)
+    if not session:
         _dm_reply_in_thread(
             ctx.driver,
             channel_id,
-            thread_for_reply,
-            "Оценку нужно прислать **в треде на моё приглашение** (Reply / «Ответить» у того сообщения, где ссылка на Jira и на командный тред). "
-            "В треде — **одно целое число**.",
+            actual_root,
+            "По этому треду нет активного раунда (уже завершён или это старое приглашение).",
         )
         return
 
@@ -323,15 +319,13 @@ def handle_dm_post(ctx: BotContext, post: dict[str, Any]) -> None:
         _dm_reply_in_thread(
             ctx.driver,
             channel_id,
-            thread_for_reply,
+            actual_root,
             "Нужно **одно целое число** в этом треде (например `5`), без текста.",
         )
         return
 
     is_new_vote = user_id not in session.votes
-    updated = ctx.session_store.record_vote(user_id, value)
-    if not updated:
-        return
+    updated = ctx.session_store.record_vote(session, user_id, value)
 
     label = _mention_label(updated.username_by_id, user_id)
     thread_line = (

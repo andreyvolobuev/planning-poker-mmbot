@@ -24,15 +24,6 @@ class PlanningSession:
 class SessionStore:
     def __init__(self) -> None:
         self._sessions: dict[str, PlanningSession] = {}
-        self._user_session: dict[str, str] = {}
-
-    def busy_users(self, user_ids: list[str]) -> list[str]:
-        busy: list[str] = []
-        for uid in user_ids:
-            sid = self._user_session.get(uid)
-            if sid and sid in self._sessions and not self._sessions[sid].finalized:
-                busy.append(uid)
-        return busy
 
     def try_start(
         self,
@@ -45,7 +36,8 @@ class SessionStore:
     ) -> tuple[bool, Optional[str]]:
         """
         Register a new session. Returns (ok, error_message).
-        error_message is human-readable (Markdown) for the thread.
+        Несколько активных раундов с одними и теми же людьми разрешены: голос сопоставляется
+        по треду ЛС (root_id ответа == id приглашения по конкретной задаче).
         """
         unique_voters: list[str] = []
         seen: set[str] = set()
@@ -56,17 +48,6 @@ class SessionStore:
 
         if not unique_voters:
             return False, "Не указаны участники для оценки (упоминания `@username`)."
-
-        conflict = self.busy_users(unique_voters)
-        if conflict:
-            labels = []
-            for uid in conflict:
-                un = username_by_id.get(uid) or uid
-                labels.append(f"@{un}")
-            return False, (
-                "Нельзя начать раунд: эти участники уже в активной оценке: "
-                + ", ".join(labels)
-            )
 
         session = PlanningSession(
             root_post_id=root_post_id,
@@ -79,28 +60,34 @@ class SessionStore:
             finalized=False,
         )
         self._sessions[root_post_id] = session
-        for uid in unique_voters:
-            self._user_session[uid] = root_post_id
         return True, None
 
     def get_by_root(self, root_post_id: str) -> Optional[PlanningSession]:
         return self._sessions.get(root_post_id)
 
-    def session_for_voter(self, user_id: str) -> Optional[PlanningSession]:
-        sid = self._user_session.get(user_id)
-        if not sid:
+    def session_for_dm_invite_thread(
+        self, user_id: str, dm_thread_root_id: str
+    ) -> Optional[PlanningSession]:
+        """Сессия, в которой этот пользователь должен голосовать в треде с данным root_id."""
+        if not dm_thread_root_id:
             return None
-        s = self._sessions.get(sid)
-        if not s or s.finalized:
-            return None
-        if user_id not in set(s.voter_ids):
-            return None
-        return s
+        for s in self._sessions.values():
+            if s.finalized:
+                continue
+            if s.dm_invite_root_by_user.get(user_id) == dm_thread_root_id:
+                return s
+        return None
 
-    def record_vote(self, user_id: str, value: int) -> Optional[PlanningSession]:
-        session = self.session_for_voter(user_id)
-        if not session:
-            return None
+    def user_has_pending_dm_invite(self, user_id: str) -> bool:
+        """Есть ли незавершённый раунд, где пользователю уже отправили приглашение в ЛС."""
+        for s in self._sessions.values():
+            if s.finalized or user_id not in s.voter_ids:
+                continue
+            if s.dm_invite_root_by_user.get(user_id):
+                return True
+        return False
+
+    def record_vote(self, session: PlanningSession, user_id: str, value: int) -> PlanningSession:
         session.votes[user_id] = value
         return session
 
@@ -110,10 +97,6 @@ class SessionStore:
 
     def finalize(self, session: PlanningSession) -> None:
         session.finalized = True
-        for uid in session.voter_ids:
-            if self._user_session.get(uid) == session.root_post_id:
-                del self._user_session[uid]
-        # keep session in _sessions for debugging; optional removal
         del self._sessions[session.root_post_id]
 
 
