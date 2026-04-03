@@ -125,6 +125,47 @@ def _post_dm(driver: Driver, channel_id: str, text: str) -> None:
     )
 
 
+def _send_dm_invites(
+    ctx: BotContext,
+    voter_ids: list[str],
+    username_by_id: dict[str, str],
+    jira_url: str,
+    thread_root_id: str,
+    thread_channel_id: str,
+) -> None:
+    """Открывает ЛС с каждым участником и шлёт напоминание с ссылкой на тикет."""
+    failed: list[str] = []
+    dm_text = (
+        "Привет! Нужна твоя оценка по тикету "
+        f"{jira_url}.\n\n"
+        "Ответь в **этом чате одним целым числом** (например `3` или `8`). "
+        "Одно сообщение — одна оценка; до итога можно прислать другое число — учтём последнее."
+    )
+    for uid in voter_ids:
+        try:
+            dm_ch = ctx.driver.channels.create_direct_message_channel([ctx.bot_id, uid])
+            cid = dm_ch.get("id")
+            if not cid:
+                raise RuntimeError("no channel id in response")
+            _post_dm(ctx.driver, cid, dm_text)
+        except Exception:
+            log.warning(
+                "Не удалось отправить ЛС пользователю %s",
+                username_by_id.get(uid, uid),
+                exc_info=True,
+            )
+            failed.append(_mention_label(username_by_id, uid))
+    if failed:
+        _post_in_thread(
+            ctx,
+            thread_root_id,
+            thread_channel_id,
+            "Не удалось написать в личку: "
+            + ", ".join(failed)
+            + ". Проверьте настройки приватности / кто может вам писать.",
+        )
+
+
 def handle_channel_root_post(ctx: BotContext, post: dict[str, Any], data: dict[str, Any]) -> None:
     channel_id = post.get("channel_id") or data.get("channel_id")
     if channel_id != ctx.planning_channel_id:
@@ -184,10 +225,12 @@ def handle_channel_root_post(ctx: BotContext, post: dict[str, Any], data: dict[s
 
     mentions = " ".join(_mention_label(username_by_id, uid) for uid in voter_ids)
     welcome = (
-        f"{mentions} жду ваших голосов **в личных сообщениях** с оценкой тикета {jira_url}. "
-        "Пришлите **только целое число** (одно сообщение — одна оценка)."
+        f"{mentions} жду оценок по тикету {jira_url}. "
+        "**Смотрите личные сообщения от бота** — ответьте там **одним целым числом** "
+        "(голос в треде канала не засчитывается)."
     )
     _post_in_thread(ctx, post_id, channel_id, welcome)
+    _send_dm_invites(ctx, voter_ids, username_by_id, jira_url, post_id, channel_id)
 
 
 def _finalize_session(ctx: BotContext, session: PlanningSession) -> None:
