@@ -14,17 +14,18 @@ log = logging.getLogger(__name__)
 
 
 def _work_hours_to_jira_duration(hours: Decimal) -> str:
-    """Часы работы → строка вида 18h или 3h 30m (для timetracking)."""
+    """Часы работы → строка вида 24h или 3h 30m (для timetracking).
+
+    Не используем суффикс `d`: в Jira «день» — это рабочий день (часто 8h), не 24h,
+    из‑за чего 4 SP × 6h = 24h превращалось в `1d` → отображалось как 8h.
+    """
     if hours <= 0:
         return "0m"
     total_minutes = int((hours * Decimal(60)).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
     if total_minutes == 0:
         return "0m"
-    d, rem = divmod(total_minutes, 24 * 60)
-    h, m = divmod(rem, 60)
+    h, m = divmod(total_minutes, 60)
     parts: list[str] = []
-    if d:
-        parts.append(f"{d}d")
     if h:
         parts.append(f"{h}h")
     if m:

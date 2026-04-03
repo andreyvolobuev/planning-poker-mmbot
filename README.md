@@ -34,7 +34,7 @@ python -m src.main
 
 ### Синхронизация с Jira (`/agree`)
 
-Если задан `JIRA_TOKEN`, **автор поста с голосованием** может в том же треде написать `/agree 3` или `/agree 0,5` (точка или запятая). Бот выставит Story Points в поле `customfield_10080` (переопределяется через `JIRA_STORY_POINTS_FIELD`) и **Original / Remaining estimate** в time tracking по правилу **1 SP = 6 ч** (`JIRA_HOURS_PER_SP`). Работает и после `/finish` (корневой пост треда подтягивается из Mattermost).
+Если задан `JIRA_TOKEN`, **автор поста с голосованием** может в том же треде написать `/agree 3` или `/agree 0,5` (точка или запятая). Бот выставит Story Points в поле `customfield_10080` (переопределяется через `JIRA_STORY_POINTS_FIELD`) и **Original / Remaining estimate** в time tracking по правилу **1 SP = 6 ч** (`JIRA_HOURS_PER_SP`). В API время передаётся как `24h`, `30h` и т.д. (без суффикса `d`: в Jira «день» — рабочий, обычно 8 ч, а не 24). Работает и после `/finish` (корневой пост треда подтягивается из Mattermost).
 
 Переменные: `JIRA_BASE_URL`, при корпоративном TLS — `JIRA_SSL_VERIFY` / `JIRA_SSL_CA_FILE` по аналогии с Mattermost.
 
