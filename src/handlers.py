@@ -158,11 +158,9 @@ def _send_dm_invites(ctx: BotContext, session: PlanningSession) -> None:
     failed: list[str] = []
     permalink = _thread_permalink(ctx, session.team_id, session.root_post_id)
     dm_text = (
-        f"Привет! Нужна твоя оценка по тикету {session.jira_url}.\n\n"
-        f"Тред в командном канале: {permalink}\n\n"
-        "**Как ответить:** открой **тред у этого сообщения** (Reply / «Ответить») "
-        "и в треде пришли **одно целое число** (например `5`). "
-        "До итога можно прислать другое число в том же треде — учтём последнее."
+        f"‼️ [Тут]({permalink}) нужна оценка по {session.jira_url}.\n\n"
+        f"Ответь **одним целым числом** (например `1`).\n\n"
+        "--------------------------------"
     )
     for uid in session.voter_ids:
         try:
