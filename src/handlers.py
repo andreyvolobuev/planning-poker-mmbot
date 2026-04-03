@@ -224,6 +224,69 @@ def _send_dm_invites(ctx: BotContext, session: PlanningSession) -> None:
         )
 
 
+def _launch_planning_round(
+    ctx: BotContext,
+    *,
+    root_post_id: str,
+    channel_id: str,
+    team_id: str,
+    jira_url: str,
+    organizer_user_id: str,
+    voter_ids: list[str],
+    username_by_id: dict[str, str],
+    intro_lines: Optional[list[str]] = None,
+    is_reset: bool = False,
+) -> None:
+    """
+    Регистрирует сессию (перезаписывает существующую с тем же root_post_id), шлёт ЛС, постит приветствие в тред.
+    """
+    ok, err = ctx.session_store.try_start(
+        root_post_id=root_post_id,
+        channel_id=channel_id,
+        team_id=team_id,
+        jira_url=jira_url,
+        organizer_user_id=organizer_user_id,
+        voter_ids=voter_ids,
+        username_by_id=username_by_id,
+    )
+    if not ok:
+        _post_in_thread(ctx, root_post_id, channel_id, err or "Не удалось начать раунд.")
+        return
+
+    session = ctx.session_store.get_by_root(root_post_id)
+    if not session:
+        log.error("session missing right after try_start root=%s", root_post_id)
+        return
+
+    thread_link = _thread_permalink(ctx, session.team_id, session.root_post_id)
+    participants = ", ".join(_mention_label(username_by_id, uid) for uid in voter_ids)
+    if is_reset:
+        log.info(
+            "Сброс и перезапуск оценки: задача=%s | тред=%s | channel_id=%s | участники: %s",
+            jira_url,
+            thread_link,
+            channel_id,
+            participants,
+        )
+    else:
+        log.info(
+            "Старт оценки: задача=%s | тред=%s | channel_id=%s | участники: %s",
+            jira_url,
+            thread_link,
+            channel_id,
+            participants,
+        )
+
+    _send_dm_invites(ctx, session)
+
+    mentions = " ".join(_mention_label(username_by_id, uid) for uid in voter_ids)
+    body_lines: list[str] = []
+    if intro_lines:
+        body_lines.extend(intro_lines)
+    body_lines.append(f"{mentions} жду в личку оценок по тикету {jira_url}.")
+    _post_in_thread(ctx, root_post_id, channel_id, "\n".join(body_lines))
+
+
 def handle_channel_root_post(ctx: BotContext, post: dict[str, Any], data: dict[str, Any]) -> None:
     channel_id = post.get("channel_id") or data.get("channel_id")
 
@@ -267,7 +330,8 @@ def handle_channel_root_post(ctx: BotContext, post: dict[str, Any], data: dict[s
         )
         return
 
-    ok, err = ctx.session_store.try_start(
+    _launch_planning_round(
+        ctx,
         root_post_id=post_id,
         channel_id=channel_id,
         team_id=team_id,
@@ -276,32 +340,6 @@ def handle_channel_root_post(ctx: BotContext, post: dict[str, Any], data: dict[s
         voter_ids=voter_ids,
         username_by_id=username_by_id,
     )
-    if not ok:
-        _post_in_thread(ctx, post_id, channel_id, err or "Не удалось начать раунд.")
-        return
-
-    session = ctx.session_store.get_by_root(post_id)
-    if not session:
-        log.error("session missing right after try_start root=%s", post_id)
-        return
-
-    thread_link = _thread_permalink(ctx, session.team_id, session.root_post_id)
-    participants = ", ".join(_mention_label(username_by_id, uid) for uid in voter_ids)
-    log.info(
-        "Старт оценки: задача=%s | тред=%s | channel_id=%s | участники: %s",
-        jira_url,
-        thread_link,
-        channel_id,
-        participants,
-    )
-
-    _send_dm_invites(ctx, session)
-
-    mentions = " ".join(_mention_label(username_by_id, uid) for uid in voter_ids)
-    welcome = (
-        f"{mentions} жду в личку оценок по тикету {jira_url}.\n"
-    )
-    _post_in_thread(ctx, post_id, channel_id, welcome)
 
 
 def _finalize_session(
@@ -410,6 +448,112 @@ def handle_channel_finish_command(ctx: BotContext, post: dict[str, Any], data: d
         _finalize_session(ctx, session, forced=False)
     else:
         _finalize_session(ctx, session, forced=True)
+
+
+def handle_channel_reset_command(ctx: BotContext, post: dict[str, Any], data: dict[str, Any]) -> None:
+    root_id = (post.get("root_id") or "").strip()
+    if not root_id:
+        return
+    if (post.get("message") or "").strip().lower() != "/reset":
+        return
+
+    channel_id = post.get("channel_id") or data.get("channel_id")
+    if not channel_id:
+        return
+
+    user_id = post.get("user_id")
+    meta = _resolve_thread_planning_meta(ctx, root_id)
+    if not meta:
+        _post_in_thread(
+            ctx,
+            root_id,
+            channel_id,
+            "Не нашёл в корне треда ссылку на Jira — `/reset` здесь недоступен.",
+        )
+        return
+
+    _jira_meta, organizer_id = meta
+    if user_id != organizer_id:
+        _post_in_thread(
+            ctx,
+            root_id,
+            channel_id,
+            "Команду `/reset` может отправить только тот, кто изначально запустил голосование.",
+        )
+        return
+
+    try:
+        root_post = ctx.driver.posts.get_post(root_id)
+    except Exception:
+        log.exception("get_post failed reset root=%s", root_id)
+        _post_in_thread(
+            ctx,
+            root_id,
+            channel_id,
+            "Не удалось загрузить корневой пост.",
+        )
+        return
+
+    message = root_post.get("message") or ""
+    jira_url = parsing.extract_jira_url(message)
+    if not jira_url:
+        _post_in_thread(
+            ctx,
+            root_id,
+            channel_id,
+            "В корневом посте нет ссылки на Jira.",
+        )
+        return
+
+    root_channel_id = root_post.get("channel_id") or channel_id
+    team_id = root_post.get("team_id") or data.get("team_id")
+    if not team_id:
+        try:
+            ch = ctx.driver.channels.get_channel(root_channel_id)
+            team_id = ch.get("team_id", "")
+        except Exception:
+            log.exception("get_channel failed reset channel=%s", root_channel_id)
+            _post_in_thread(
+                ctx,
+                root_id,
+                root_channel_id,
+                "Не удалось определить команду канала.",
+            )
+            return
+    if not team_id:
+        _post_in_thread(
+            ctx,
+            root_id,
+            root_channel_id,
+            "Не удалось определить команду канала.",
+        )
+        return
+
+    voter_ids, username_by_id = _build_voter_list(
+        ctx.driver, root_post, message, ctx.bot_id
+    )
+    if not voter_ids:
+        _post_in_thread(
+            ctx,
+            root_id,
+            root_channel_id,
+            "В корневом посте нет упоминаний участников (`@username`). "
+            "Отредактируйте пост и снова отправьте `/reset`.",
+        )
+        return
+
+    _launch_planning_round(
+        ctx,
+        root_post_id=root_id,
+        channel_id=root_channel_id,
+        team_id=team_id,
+        jira_url=jira_url,
+        organizer_user_id=organizer_id,
+        voter_ids=voter_ids,
+        username_by_id=username_by_id,
+        intro_lines=["**Раунд сброшен.**"],
+        is_reset=True,
+    )
 
 
 def handle_channel_agree_command(ctx: BotContext, post: dict[str, Any], data: dict[str, Any]) -> None:
@@ -600,6 +744,7 @@ def handle_posted_message(ctx: BotContext, message: str) -> None:
         elif channel_type in _TEAM_CHANNEL_TYPES:
             if (post.get("root_id") or "").strip():
                 handle_channel_finish_command(ctx, post, data)
+                handle_channel_reset_command(ctx, post, data)
                 handle_channel_agree_command(ctx, post, data)
             else:
                 handle_channel_root_post(ctx, post, data)
