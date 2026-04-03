@@ -13,6 +13,7 @@ class PlanningSession:
     channel_id: str
     team_id: str
     jira_url: str
+    organizer_user_id: str
     voter_ids: list[str] = field(default_factory=list)
     username_by_id: dict[str, str] = field(default_factory=dict)
     votes: dict[str, int] = field(default_factory=dict)
@@ -31,6 +32,7 @@ class SessionStore:
         channel_id: str,
         team_id: str,
         jira_url: str,
+        organizer_user_id: str,
         voter_ids: list[str],
         username_by_id: dict[str, str],
     ) -> tuple[bool, Optional[str]]:
@@ -48,12 +50,15 @@ class SessionStore:
 
         if not unique_voters:
             return False, "Не указаны участники для оценки (упоминания `@username`)."
+        if not organizer_user_id:
+            return False, "Не удалось определить автора поста."
 
         session = PlanningSession(
             root_post_id=root_post_id,
             channel_id=channel_id,
             team_id=team_id,
             jira_url=jira_url,
+            organizer_user_id=organizer_user_id,
             voter_ids=unique_voters,
             username_by_id=dict(username_by_id),
             votes={},

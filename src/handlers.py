@@ -246,6 +246,7 @@ def handle_channel_root_post(ctx: BotContext, post: dict[str, Any], data: dict[s
         channel_id=channel_id,
         team_id=team_id,
         jira_url=jira_url,
+        organizer_user_id=user_id or "",
         voter_ids=voter_ids,
         username_by_id=username_by_id,
     )
@@ -274,33 +275,113 @@ def handle_channel_root_post(ctx: BotContext, post: dict[str, Any], data: dict[s
     welcome = (
         f"{mentions} жду оценок по тикету {jira_url}. "
         "**В ЛС от бота** — ссылка на этот тред и инструкция; оценку пришлите **ответом в треде на сообщение бота** (не в корень ЛС). "
-        "Голос в канале в тред не присылайте — не засчитывается."
+        "Голос в канале в тред не присылайте — не засчитывается.\n"
+        "Досрочно подвести итог по уже пришедшим голосам может **автор этого поста**, написав в этом треде `/finish`."
     )
     _post_in_thread(ctx, post_id, channel_id, welcome)
 
 
-def _finalize_session(ctx: BotContext, session: PlanningSession) -> None:
-    lines = []
+def _finalize_session(
+    ctx: BotContext,
+    session: PlanningSession,
+    *,
+    forced: bool = False,
+) -> None:
+    if ctx.session_store.get_by_root(session.root_post_id) is None:
+        return
+
+    done_link = _thread_permalink(ctx, session.team_id, session.root_post_id)
+    lines: list[str] = []
     for uid in session.voter_ids:
         un = session.username_by_id.get(uid) or uid
-        v = session.votes.get(uid, 0)
-        lines.append(f"@{un} {v}")
+        if uid in session.votes:
+            lines.append(f"@{un} {session.votes[uid]}")
+        else:
+            lines.append(f"@{un} —")
     body = "\n".join(lines)
-    values = [session.votes[uid] for uid in session.voter_ids]
-    total = median_ceil(values)
-    done_link = _thread_permalink(ctx, session.team_id, session.root_post_id)
-    log.info(
-        "Раунд завершён: все проголосовали | задача=%s | тред=%s | итоговая_оценка=%s",
-        session.jira_url,
-        done_link,
-        total,
-    )
-    msg = (
-        "Все оценки получены. Результаты:\n```\n"
-        f"{body}\n\nИтог: {total}\n```"
-    )
+    values = [session.votes[uid] for uid in session.voter_ids if uid in session.votes]
+
+    if not values:
+        total_line = "Итог: голосов нет, медиану не считаем."
+        total_log: str | int = "—"
+    else:
+        total = median_ceil(values)
+        total_line = (
+            f"Итог: {total} (медиана по {len(values)} из {len(session.voter_ids)} голосов)"
+            if forced and len(values) < len(session.voter_ids)
+            else f"Итог: {total}"
+        )
+        total_log = total
+
+    if forced:
+        header = "Раунд завершён досрочно (`/finish`). Результаты по **имеющимся** голосам:"
+        log.info(
+            "Раунд завершён досрочно (/finish) | задача=%s | тред=%s | итог=%s | голосов=%s/%s",
+            session.jira_url,
+            done_link,
+            total_log,
+            len(values),
+            len(session.voter_ids),
+        )
+    else:
+        header = "Все оценки получены. Результаты:"
+        log.info(
+            "Раунд завершён: все проголосовали | задача=%s | тред=%s | итоговая_оценка=%s",
+            session.jira_url,
+            done_link,
+            total_log,
+        )
+
+    extra = ""
+    if forced:
+        absent = [
+            _mention_label(session.username_by_id, uid)
+            for uid in session.voter_ids
+            if uid not in session.votes
+        ]
+        if absent:
+            extra = "\n\nНе проголосовали: " + ", ".join(absent)
+
+    msg = f"{header}\n```\n{body}\n\n{total_line}\n```{extra}"
     _post_in_thread(ctx, session.root_post_id, session.channel_id, msg)
     ctx.session_store.finalize(session)
+
+
+def handle_channel_finish_command(ctx: BotContext, post: dict[str, Any], data: dict[str, Any]) -> None:
+    root_id = (post.get("root_id") or "").strip()
+    if not root_id:
+        return
+    if (post.get("message") or "").strip().lower() != "/finish":
+        return
+
+    channel_id = post.get("channel_id") or data.get("channel_id")
+    if not channel_id:
+        return
+
+    user_id = post.get("user_id")
+    session = ctx.session_store.get_by_root(root_id)
+    if not session:
+        _post_in_thread(
+            ctx,
+            root_id,
+            channel_id,
+            "По этому треду нет активного голосования.",
+        )
+        return
+
+    if user_id != session.organizer_user_id:
+        _post_in_thread(
+            ctx,
+            root_id,
+            channel_id,
+            "Команду `/finish` может отправить только автор поста, с которого запущено голосование.",
+        )
+        return
+
+    if ctx.session_store.all_voted(session):
+        _finalize_session(ctx, session, forced=False)
+    else:
+        _finalize_session(ctx, session, forced=True)
 
 
 def handle_dm_post(ctx: BotContext, post: dict[str, Any]) -> None:
@@ -374,7 +455,7 @@ def handle_dm_post(ctx: BotContext, post: dict[str, Any]) -> None:
     )
 
     if ctx.session_store.all_voted(updated):
-        _finalize_session(ctx, updated)
+        _finalize_session(ctx, updated, forced=False)
 
 
 def handle_posted_message(ctx: BotContext, message: str) -> None:
@@ -396,7 +477,10 @@ def handle_posted_message(ctx: BotContext, message: str) -> None:
         if channel_type == "D":
             handle_dm_post(ctx, post)
         elif channel_type in _TEAM_CHANNEL_TYPES:
-            handle_channel_root_post(ctx, post, data)
+            if (post.get("root_id") or "").strip():
+                handle_channel_finish_command(ctx, post, data)
+            else:
+                handle_channel_root_post(ctx, post, data)
     except Exception:
         log.exception("handler error post_id=%s", post.get("id"))
 
