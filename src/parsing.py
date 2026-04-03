@@ -27,6 +27,18 @@ def extract_jira_url(message: str) -> Optional[str]:
     return m.group(1) if m else None
 
 
+# Ключ тикета из URL вида .../browse/PROJ-123
+JIRA_ISSUE_KEY_RE = re.compile(
+    r"/browse/([A-Z][A-Z0-9]+-\d+)",
+    re.IGNORECASE,
+)
+
+
+def extract_jira_issue_key(jira_url: str) -> Optional[str]:
+    m = JIRA_ISSUE_KEY_RE.search(jira_url or "")
+    return m.group(1).upper() if m else None
+
+
 def extract_usernames_from_message(message: str) -> list[str]:
     seen: set[str] = set()
     out: list[str] = []
@@ -142,6 +154,32 @@ def format_arithmetic_mean(values: list[Decimal]) -> str:
     q = mean.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
     s = format(q, "f").rstrip("0").rstrip(".")
     return s
+
+
+def format_story_points_plain(d: Decimal) -> str:
+    """Отображение SP для Jira /agree (без сетки 0.05)."""
+    if d == d.to_integral():
+        return str(int(d))
+    s = format(d.normalize(), "f").rstrip("0").rstrip(".")
+    return s
+
+
+def parse_agree_story_points(raw: str) -> Optional[Decimal]:
+    """
+    Число для /agree и Jira (без сетки 0.05): целое или дробное, `.` или `,`.
+    """
+    norm = _normalize_decimal_separators((raw or "").strip())
+    if not norm or norm in "+-":
+        return None
+    try:
+        d = Decimal(norm)
+    except InvalidOperation:
+        return None
+    if not d.is_finite():
+        return None
+    if d < 0:
+        return None
+    return d
 
 
 def parse_int_vote(message: str) -> Optional[int]:

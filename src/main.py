@@ -44,12 +44,17 @@ def main() -> None:
         me.get("username"),
     )
 
+    if settings.jira:
+        log.info("Интеграция с Jira включена (%s).", settings.jira.base_url)
+        if not settings.jira.ssl_verify:
+            urllib3.disable_warnings(InsecureRequestWarning)
     store = SessionStore()
     ctx = BotContext(
         driver=driver,
         bot_id=bot_user_id,
         site_url=settings.mattermost_url,
         session_store=store,
+        jira=settings.jira,
     )
 
     async def on_event(message: str) -> None:

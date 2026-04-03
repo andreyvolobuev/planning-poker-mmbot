@@ -11,6 +11,8 @@ from urllib.parse import quote
 from mattermostdriver import Driver
 
 from src import parsing
+from src.config import JiraIntegration
+from src.jira_client import sync_story_points_and_estimates
 from src.sessions import PlanningSession, SessionStore, median_ceil_vote
 
 log = logging.getLogger(__name__)
@@ -30,6 +32,7 @@ class BotContext:
     bot_id: str
     site_url: str
     session_store: SessionStore
+    jira: JiraIntegration | None
 
 
 def _load_posted_payload(message: str) -> Optional[tuple[dict[str, Any], dict[str, Any]]]:
@@ -63,6 +66,30 @@ def _load_posted_payload(message: str) -> Optional[tuple[dict[str, Any], dict[st
 def _mention_label(username_by_id: dict[str, str], user_id: str) -> str:
     u = username_by_id.get(user_id) or user_id
     return f"@{u}"
+
+
+def _resolve_thread_planning_meta(
+    ctx: BotContext,
+    root_post_id: str,
+) -> Optional[tuple[str, str]]:
+    """
+    (jira_url, organizer_user_id) для треда: активная сессия или корневой пост в Mattermost.
+    Нужно после /finish, когда сессия уже удалена из памяти.
+    """
+    sess = ctx.session_store.get_by_root(root_post_id)
+    if sess:
+        return sess.jira_url, sess.organizer_user_id
+    try:
+        root_post = ctx.driver.posts.get_post(root_post_id)
+    except Exception:
+        log.exception("get_post failed root=%s", root_post_id)
+        return None
+    msg = root_post.get("message") or ""
+    jira_url = parsing.extract_jira_url(msg)
+    org = (root_post.get("user_id") or "").strip()
+    if not jira_url or not org:
+        return None
+    return jira_url, org
 
 
 def _thread_permalink(ctx: BotContext, team_id: str, planning_root_post_id: str) -> str:
@@ -283,7 +310,8 @@ def handle_channel_root_post(ctx: BotContext, post: dict[str, Any], data: dict[s
         f"{mentions} жду оценок по тикету {jira_url}. "
         "**В ЛС от бота** — ссылка на этот тред и инструкция; оценку пришлите **ответом в треде на сообщение бота** (не в корень ЛС). "
         "Голос в канале в тред не присылайте — не засчитывается.\n"
-        "Досрочно подвести итог по уже пришедшим голосам может **автор этого поста**, написав в этом треде `/finish`."
+        "Досрочно подвести итог по уже пришедшим голосам может **автор этого поста**, написав в этом треде `/finish`.\n"
+        "Записать согласованные SP в Jira (и оценки времени) может автор командой `/agree 3` или `/agree 0,5` в этом треде (если настроен `JIRA_TOKEN`)."
     )
     _post_in_thread(ctx, post_id, channel_id, welcome)
 
@@ -396,6 +424,100 @@ def handle_channel_finish_command(ctx: BotContext, post: dict[str, Any], data: d
         _finalize_session(ctx, session, forced=True)
 
 
+def handle_channel_agree_command(ctx: BotContext, post: dict[str, Any], data: dict[str, Any]) -> None:
+    root_id = (post.get("root_id") or "").strip()
+    if not root_id:
+        return
+    raw_msg = (post.get("message") or "").strip()
+    if not raw_msg.lower().startswith("/agree"):
+        return
+
+    tail = raw_msg[6:].strip()
+    channel_id = post.get("channel_id") or data.get("channel_id")
+    if not channel_id:
+        return
+
+    user_id = post.get("user_id")
+    meta = _resolve_thread_planning_meta(ctx, root_id)
+    if not meta:
+        _post_in_thread(
+            ctx,
+            root_id,
+            channel_id,
+            "Не нашёл в корне треда ссылку на Jira — `/agree` здесь недоступен.",
+        )
+        return
+
+    jira_url, organizer_id = meta
+    if user_id != organizer_id:
+        _post_in_thread(
+            ctx,
+            root_id,
+            channel_id,
+            "Команду `/agree` может отправить только автор поста, с которого запущено голосование.",
+        )
+        return
+
+    if not tail:
+        _post_in_thread(
+            ctx,
+            root_id,
+            channel_id,
+            "Укажите оценку: `/agree 3` или `/agree 0,5` (точка или запятая как разделитель).",
+        )
+        return
+
+    sp = parsing.parse_agree_story_points(tail)
+    if sp is None:
+        _post_in_thread(
+            ctx,
+            root_id,
+            channel_id,
+            "Не удалось разобрать число. Пример: `/agree 3` или `/agree 0,5`.",
+        )
+        return
+
+    issue_key = parsing.extract_jira_issue_key(jira_url)
+    if not issue_key:
+        _post_in_thread(
+            ctx,
+            root_id,
+            channel_id,
+            f"Не извлекаю ключ тикета из ссылки: {jira_url}",
+        )
+        return
+
+    if ctx.jira is None:
+        _post_in_thread(
+            ctx,
+            root_id,
+            channel_id,
+            "**JIRA_TOKEN** не задан — в Jira ничего не записано. "
+            f"Для справки согласованные SP: **{parsing.format_story_points_plain(sp)}**.",
+        )
+        return
+
+    ok, err = sync_story_points_and_estimates(ctx.jira, issue_key, sp)
+    work_h = sp * ctx.jira.hours_per_sp
+    wh_disp = parsing.format_arithmetic_mean([work_h])
+    sp_disp = parsing.format_story_points_plain(sp)
+    if ok:
+        _post_in_thread(
+            ctx,
+            root_id,
+            channel_id,
+            f"В **Jira** [{issue_key}]({jira_url}): Story Points = **{sp_disp}**, "
+            f"original / remaining estimate = **{wh_disp}** ч (1 SP = {ctx.jira.hours_per_sp} ч).",
+        )
+    else:
+        _post_in_thread(
+            ctx,
+            root_id,
+            channel_id,
+            f"Jira не обновлена ({issue_key}): `{err}`",
+        )
+
+
 def handle_dm_post(ctx: BotContext, post: dict[str, Any]) -> None:
     user_id = post.get("user_id")
     if not user_id or user_id == ctx.bot_id:
@@ -492,6 +614,7 @@ def handle_posted_message(ctx: BotContext, message: str) -> None:
         elif channel_type in _TEAM_CHANNEL_TYPES:
             if (post.get("root_id") or "").strip():
                 handle_channel_finish_command(ctx, post, data)
+                handle_channel_agree_command(ctx, post, data)
             else:
                 handle_channel_root_post(ctx, post, data)
     except Exception:
