@@ -6,6 +6,7 @@ import json
 import logging
 from dataclasses import dataclass
 from typing import Any, Optional
+from urllib.parse import quote
 
 from mattermostdriver import Driver
 
@@ -14,12 +15,14 @@ from src.sessions import PlanningSession, SessionStore, median_ceil
 
 log = logging.getLogger(__name__)
 
+_TEAM_CHANNEL_TYPES = frozenset({"O", "P", "G"})
+
 
 @dataclass
 class BotContext:
     driver: Driver
     bot_id: str
-    planning_channel_id: str
+    site_url: str
     session_store: SessionStore
 
 
@@ -54,6 +57,17 @@ def _load_posted_payload(message: str) -> Optional[tuple[dict[str, Any], dict[st
 def _mention_label(username_by_id: dict[str, str], user_id: str) -> str:
     u = username_by_id.get(user_id) or user_id
     return f"@{u}"
+
+
+def _thread_permalink(ctx: BotContext, team_id: str, planning_root_post_id: str) -> str:
+    try:
+        team = ctx.driver.teams.get_team(team_id)
+        slug = (team.get("name") or team_id).strip()
+    except Exception:
+        log.exception("get_team failed team_id=%s", team_id)
+        slug = team_id
+    base = ctx.site_url.rstrip("/")
+    return f"{base}/{quote(slug, safe='')}/pl/{planning_root_post_id}"
 
 
 def _build_voter_list(
@@ -115,8 +129,8 @@ def _post_in_thread(ctx: BotContext, root_post_id: str, channel_id: str, text: s
     )
 
 
-def _post_dm(driver: Driver, channel_id: str, text: str) -> None:
-    driver.posts.create_post(
+def _post_dm_top_level(driver: Driver, channel_id: str, text: str) -> dict[str, Any]:
+    return driver.posts.create_post(
         {
             "channel_id": channel_id,
             "message": text,
@@ -125,41 +139,54 @@ def _post_dm(driver: Driver, channel_id: str, text: str) -> None:
     )
 
 
-def _send_dm_invites(
-    ctx: BotContext,
-    voter_ids: list[str],
-    username_by_id: dict[str, str],
-    jira_url: str,
+def _dm_reply_in_thread(
+    driver: Driver,
+    channel_id: str,
     thread_root_id: str,
-    thread_channel_id: str,
+    text: str,
 ) -> None:
-    """Открывает ЛС с каждым участником и шлёт напоминание с ссылкой на тикет."""
-    failed: list[str] = []
-    dm_text = (
-        "Привет! Нужна твоя оценка по тикету "
-        f"{jira_url}.\n\n"
-        "Ответь в **этом чате одним целым числом** (например `3` или `8`). "
-        "Одно сообщение — одна оценка; до итога можно прислать другое число — учтём последнее."
+    driver.posts.create_post(
+        {
+            "channel_id": channel_id,
+            "message": text,
+            "root_id": thread_root_id,
+        }
     )
-    for uid in voter_ids:
+
+
+def _send_dm_invites(ctx: BotContext, session: PlanningSession) -> None:
+    failed: list[str] = []
+    permalink = _thread_permalink(ctx, session.team_id, session.root_post_id)
+    dm_text = (
+        f"Привет! Нужна твоя оценка по тикету {session.jira_url}.\n\n"
+        f"Тред в командном канале: {permalink}\n\n"
+        "**Как ответить:** открой **тред у этого сообщения** (Reply / «Ответить») "
+        "и в треде пришли **одно целое число** (например `5`). "
+        "До итога можно прислать другое число в том же треде — учтём последнее."
+    )
+    for uid in session.voter_ids:
         try:
             dm_ch = ctx.driver.channels.create_direct_message_channel([ctx.bot_id, uid])
             cid = dm_ch.get("id")
             if not cid:
                 raise RuntimeError("no channel id in response")
-            _post_dm(ctx.driver, cid, dm_text)
+            created = _post_dm_top_level(ctx.driver, cid, dm_text)
+            pid = created.get("id")
+            if not pid:
+                raise RuntimeError("create_post returned no id")
+            session.dm_invite_root_by_user[uid] = pid
         except Exception:
             log.warning(
                 "Не удалось отправить ЛС пользователю %s",
-                username_by_id.get(uid, uid),
+                session.username_by_id.get(uid, uid),
                 exc_info=True,
             )
-            failed.append(_mention_label(username_by_id, uid))
+            failed.append(_mention_label(session.username_by_id, uid))
     if failed:
         _post_in_thread(
             ctx,
-            thread_root_id,
-            thread_channel_id,
+            session.root_post_id,
+            session.channel_id,
             "Не удалось написать в личку: "
             + ", ".join(failed)
             + ". Проверьте настройки приватности / кто может вам писать.",
@@ -168,8 +195,6 @@ def _send_dm_invites(
 
 def handle_channel_root_post(ctx: BotContext, post: dict[str, Any], data: dict[str, Any]) -> None:
     channel_id = post.get("channel_id") or data.get("channel_id")
-    if channel_id != ctx.planning_channel_id:
-        return
 
     root_id = (post.get("root_id") or "").strip()
     if root_id:
@@ -223,14 +248,20 @@ def handle_channel_root_post(ctx: BotContext, post: dict[str, Any], data: dict[s
         _post_in_thread(ctx, post_id, channel_id, err or "Не удалось начать раунд.")
         return
 
+    session = ctx.session_store.get_by_root(post_id)
+    if not session:
+        log.error("session missing right after try_start root=%s", post_id)
+        return
+
+    _send_dm_invites(ctx, session)
+
     mentions = " ".join(_mention_label(username_by_id, uid) for uid in voter_ids)
     welcome = (
         f"{mentions} жду оценок по тикету {jira_url}. "
-        "**Смотрите личные сообщения от бота** — ответьте там **одним целым числом** "
-        "(голос в треде канала не засчитывается)."
+        "**В ЛС от бота** — ссылка на этот тред и инструкция; оценку пришлите **ответом в треде на сообщение бота** (не в корень ЛС). "
+        "Голос в канале в тред не присылайте — не засчитывается."
     )
     _post_in_thread(ctx, post_id, channel_id, welcome)
-    _send_dm_invites(ctx, voter_ids, username_by_id, jira_url, post_id, channel_id)
 
 
 def _finalize_session(ctx: BotContext, session: PlanningSession) -> None:
@@ -263,13 +294,37 @@ def handle_dm_post(ctx: BotContext, post: dict[str, Any]) -> None:
     if not channel_id:
         return
 
+    expected_root = session.dm_invite_root_by_user.get(user_id)
+    if not expected_root:
+        _post_dm_top_level(
+            ctx.driver,
+            channel_id,
+            "Сейчас нет активного приглашения с оценкой в этом чате. "
+            "Если только что стартовали раунд — подождите сообщение от бота со ссылкой на тикет.",
+        )
+        return
+
+    actual_root = (post.get("root_id") or "").strip()
+    thread_for_reply = actual_root or expected_root
+
+    if actual_root != expected_root:
+        _dm_reply_in_thread(
+            ctx.driver,
+            channel_id,
+            thread_for_reply,
+            "Оценку нужно прислать **в треде на моё приглашение** (Reply / «Ответить» у того сообщения, где ссылка на Jira и на командный тред). "
+            "В треде — **одно целое число**.",
+        )
+        return
+
     raw = (post.get("message") or "").strip()
     value = parsing.parse_int_vote(raw)
     if value is None:
-        _post_dm(
+        _dm_reply_in_thread(
             ctx.driver,
             channel_id,
-            "Нужно прислать **одно целое число** (например `5`). Без текста и пробелов.",
+            thread_for_reply,
+            "Нужно **одно целое число** в этом треде (например `5`), без текста.",
         )
         return
 
@@ -313,7 +368,7 @@ def handle_posted_message(ctx: BotContext, message: str) -> None:
     try:
         if channel_type == "D":
             handle_dm_post(ctx, post)
-        elif channel_id == ctx.planning_channel_id:
+        elif channel_type in _TEAM_CHANNEL_TYPES:
             handle_channel_root_post(ctx, post, data)
     except Exception:
         log.exception("handler error post_id=%s", post.get("id"))

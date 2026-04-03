@@ -19,7 +19,6 @@ class Settings:
     mattermost_port: int
     bot_token: str
     bot_id: str
-    planning_channel: str
     ssl_verify: bool
     ssl_ca_file: str | None
 
@@ -51,7 +50,6 @@ def load_settings() -> Settings:
     url = os.environ.get("MATTERMOST_URL", "").strip()
     token = os.environ.get("BOT_TOKEN", os.environ.get("MATTERMOST_BOT_TOKEN", "")).strip()
     bot_id = os.environ.get("BOT_ID", "").strip()
-    channel = os.environ.get("PLANNING_CHANNEL", "dm-planning-poker").strip()
 
     if not url:
         raise ValueError("MATTERMOST_URL is required")
@@ -74,7 +72,6 @@ def load_settings() -> Settings:
         mattermost_port=port,
         bot_token=token,
         bot_id=bot_id,
-        planning_channel=channel,
         ssl_verify=ssl_verify,
         ssl_ca_file=ca_file,
     )

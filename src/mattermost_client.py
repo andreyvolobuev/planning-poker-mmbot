@@ -1,4 +1,4 @@
-"""Mattermost Driver factory and channel lookup."""
+"""Mattermost Driver factory."""
 
 from __future__ import annotations
 
@@ -25,24 +25,4 @@ def build_driver(settings: Settings) -> Driver:
             "token": settings.bot_token,
             "verify": _requests_verify_arg(settings),
         }
-    )
-
-
-def resolve_planning_channel(driver: Driver, channel_name: str, bot_user_id: str) -> dict:
-    """
-    Find channel by name among teams the bot belongs to.
-    Returns channel object (includes id, team_id, name, type, ...).
-    """
-    teams = driver.teams.get_user_teams(bot_user_id)
-    last_error: str | None = None
-    for team in teams:
-        team_id = team["id"]
-        try:
-            return driver.channels.get_channel_by_name(team_id, channel_name)
-        except Exception as e:  # noqa: BLE001 — try next team
-            last_error = f"{type(e).__name__}: {e}" if str(e) else type(e).__name__
-            continue
-    raise RuntimeError(
-        f"Канал {channel_name!r} не найден ни в одной команде бота. "
-        f"Добавьте бота в канал. Последняя ошибка API: {last_error}"
     )

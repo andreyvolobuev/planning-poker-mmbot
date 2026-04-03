@@ -17,6 +17,8 @@ class PlanningSession:
     username_by_id: dict[str, str] = field(default_factory=dict)
     votes: dict[str, int] = field(default_factory=dict)
     finalized: bool = False
+    # id поста-приглашения в ЛС; ответ с оценкой должен иметь root_id == этому id
+    dm_invite_root_by_user: dict[str, str] = field(default_factory=dict)
 
 
 class SessionStore:

@@ -11,7 +11,7 @@ from urllib3.exceptions import InsecureRequestWarning
 
 from src.config import load_settings
 from src.handlers import BotContext, websocket_event_handler
-from src.mattermost_client import build_driver, resolve_planning_channel
+from src.mattermost_client import build_driver
 from src.mattermost_websocket import ServerAuthSSLWebsocket
 from src.sessions import SessionStore
 
@@ -39,12 +39,8 @@ def main() -> None:
             bot_user_id,
         )
 
-    channel = resolve_planning_channel(driver, settings.planning_channel, bot_user_id)
-    planning_channel_id = channel["id"]
     log.info(
-        "Подключено: канал #%s (%s), bot user=%s",
-        channel.get("name"),
-        planning_channel_id,
+        "Бот запущен: user=%s, слушаю все командные каналы, куда добавлен бот (Jira + @mentions в корне треда).",
         me.get("username"),
     )
 
@@ -52,7 +48,7 @@ def main() -> None:
     ctx = BotContext(
         driver=driver,
         bot_id=bot_user_id,
-        planning_channel_id=planning_channel_id,
+        site_url=settings.mattermost_url,
         session_store=store,
     )
 
