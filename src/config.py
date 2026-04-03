@@ -62,9 +62,9 @@ def _load_jira_integration() -> JiraIntegration | None:
     token = os.environ.get("JIRA_TOKEN", "").strip()
     if not token:
         return None
-    base = os.environ.get("JIRA_BASE_URL", "https://jira.2gis.ru").strip().rstrip("/")
-    field = os.environ.get("JIRA_STORY_POINTS_FIELD", "customfield_10080").strip()
-    hp_raw = os.environ.get("JIRA_HOURS_PER_SP", "6").strip()
+    base = os.environ.get("JIRA_BASE_URL").strip().rstrip("/")
+    field = os.environ.get("JIRA_STORY_POINTS_FIELD").strip()
+    hp_raw = os.environ.get("JIRA_HOURS_PER_SP").strip()
     try:
         hours_per_sp = Decimal(hp_raw)
     except Exception as e:
