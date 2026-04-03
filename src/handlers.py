@@ -175,6 +175,13 @@ def _send_dm_invites(ctx: BotContext, session: PlanningSession) -> None:
             if not pid:
                 raise RuntimeError("create_post returned no id")
             session.dm_invite_root_by_user[uid] = pid
+            log.info(
+                "ЛС запрос оценки → участник=@%s | задача=%s | тред_канала=%s | id_приглашения_лс=%s",
+                session.username_by_id.get(uid, uid),
+                session.jira_url,
+                permalink,
+                pid,
+            )
         except Exception:
             log.warning(
                 "Не удалось отправить ЛС пользователю %s",
@@ -253,6 +260,16 @@ def handle_channel_root_post(ctx: BotContext, post: dict[str, Any], data: dict[s
         log.error("session missing right after try_start root=%s", post_id)
         return
 
+    thread_link = _thread_permalink(ctx, session.team_id, session.root_post_id)
+    participants = ", ".join(_mention_label(username_by_id, uid) for uid in voter_ids)
+    log.info(
+        "Старт оценки: задача=%s | тред=%s | channel_id=%s | участники: %s",
+        jira_url,
+        thread_link,
+        channel_id,
+        participants,
+    )
+
     _send_dm_invites(ctx, session)
 
     mentions = " ".join(_mention_label(username_by_id, uid) for uid in voter_ids)
@@ -273,6 +290,13 @@ def _finalize_session(ctx: BotContext, session: PlanningSession) -> None:
     body = "\n".join(lines)
     values = [session.votes[uid] for uid in session.voter_ids]
     total = median_ceil(values)
+    done_link = _thread_permalink(ctx, session.team_id, session.root_post_id)
+    log.info(
+        "Раунд завершён: все проголосовали | задача=%s | тред=%s | итоговая_оценка=%s",
+        session.jira_url,
+        done_link,
+        total,
+    )
     msg = (
         "Все оценки получены. Результаты:\n```\n"
         f"{body}\n\nИтог: {total}\n```"
@@ -326,6 +350,17 @@ def handle_dm_post(ctx: BotContext, post: dict[str, Any]) -> None:
 
     is_new_vote = user_id not in session.votes
     updated = ctx.session_store.record_vote(session, user_id, value)
+
+    planning_link = _thread_permalink(ctx, updated.team_id, updated.root_post_id)
+    log.info(
+        "Оценка получена: участник=@%s | значение=%s | задача=%s | тред=%s | root_треда_лс=%s%s",
+        updated.username_by_id.get(user_id, user_id),
+        value,
+        updated.jira_url,
+        planning_link,
+        actual_root,
+        "" if is_new_vote else " (обновление)",
+    )
 
     label = _mention_label(updated.username_by_id, user_id)
     thread_line = (
