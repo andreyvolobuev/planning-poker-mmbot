@@ -11,11 +11,17 @@ from urllib.parse import quote
 from mattermostdriver import Driver
 
 from src import parsing
-from src.sessions import PlanningSession, SessionStore, median_ceil
+from src.sessions import PlanningSession, SessionStore, median_ceil_vote
 
 log = logging.getLogger(__name__)
 
 _TEAM_CHANNEL_TYPES = frozenset({"O", "P", "G"})
+
+_VOTE_FORMAT_HINT = (
+    "**Одно число** в треде: целое или дробное, разделитель **точка или запятая** (`3.5` или `3,5`). "
+    "Допустимый шаг **0,05** (как `2`, `2.5`, `2.95`); лишняя точность округляется **вверх** к шагу "
+    "(например `2.93` → `2.95`, `1,00001` → `1,05`). Без текста кроме числа."
+)
 
 
 @dataclass
@@ -158,9 +164,10 @@ def _send_dm_invites(ctx: BotContext, session: PlanningSession) -> None:
     failed: list[str] = []
     permalink = _thread_permalink(ctx, session.team_id, session.root_post_id)
     dm_text = (
+        "--------------------------------\n\n"
         f"‼️ [Тут]({permalink}) нужна оценка по {session.jira_url}.\n\n"
-        f"Ответь **одним целым числом** (например `1`).\n\n"
-        "--------------------------------"
+        + _VOTE_FORMAT_HINT
+        + "\n\n--------------------------------"
     )
     for uid in session.voter_ids:
         try:
@@ -295,23 +302,28 @@ def _finalize_session(
     for uid in session.voter_ids:
         un = session.username_by_id.get(uid) or uid
         if uid in session.votes:
-            lines.append(f"@{un} {session.votes[uid]}")
+            lines.append(f"@{un} {parsing.format_vote(session.votes[uid])}")
         else:
             lines.append(f"@{un} —")
     body = "\n".join(lines)
     values = [session.votes[uid] for uid in session.voter_ids if uid in session.votes]
 
     if not values:
-        total_line = "Итог: голосов нет, медиану не считаем."
-        total_log: str | int = "—"
+        total_line = "Итог: голосов нет, медиану и среднее не считаем."
+        total_log = "—"
     else:
-        total = median_ceil(values)
-        total_line = (
-            f"Итог: {total} (медиана по {len(values)} из {len(session.voter_ids)} голосов)"
+        median_val = median_ceil_vote(values)
+        median_s = parsing.format_vote(median_val)
+        mean_s = parsing.format_arithmetic_mean(values)
+        partial_note = (
+            f" (по {len(values)} из {len(session.voter_ids)} голосов)"
             if forced and len(values) < len(session.voter_ids)
-            else f"Итог: {total}"
+            else ""
         )
-        total_log = total
+        total_line = (
+            f"Итог: медиана {median_s}, среднее {mean_s}{partial_note}"
+        )
+        total_log = f"медиана={median_s}, среднее={mean_s}"
 
     if forced:
         header = "Раунд завершён досрочно (`/finish`). Результаты по **имеющимся** голосам:"
@@ -401,8 +413,9 @@ def handle_dm_post(ctx: BotContext, post: dict[str, Any]) -> None:
                 ctx.driver,
                 channel_id,
                 "Для каждой задачи у меня отдельное сообщение-приглашение. "
-                "Открой **тред** (Reply) у нужного приглашения и пришли там **одно целое число**. "
-                "В корень чата число не засчитывается.",
+                "Открой **тред** (Reply) у нужного приглашения и пришли там оценку. "
+                + _VOTE_FORMAT_HINT
+                + " В корень чата не пиши — не засчитается.",
             )
         return
 
@@ -417,13 +430,13 @@ def handle_dm_post(ctx: BotContext, post: dict[str, Any]) -> None:
         return
 
     raw = (post.get("message") or "").strip()
-    value = parsing.parse_int_vote(raw)
+    value = parsing.parse_vote(raw)
     if value is None:
         _dm_reply_in_thread(
             ctx.driver,
             channel_id,
             actual_root,
-            "Нужно **одно целое число** в этом треде (например `5`), без текста.",
+            "Нужно одно число в этом треде. " + _VOTE_FORMAT_HINT,
         )
         return
 
@@ -434,7 +447,7 @@ def handle_dm_post(ctx: BotContext, post: dict[str, Any]) -> None:
     log.info(
         "Оценка получена: участник=@%s | значение=%s | задача=%s | тред=%s | root_треда_лс=%s%s",
         updated.username_by_id.get(user_id, user_id),
-        value,
+        parsing.format_vote(value),
         updated.jira_url,
         planning_link,
         actual_root,

@@ -1,8 +1,9 @@
-"""Extract Jira links and @mentions from Mattermost post text."""
+"""Extract Jira links, @mentions, and vote values from Mattermost post text."""
 
 from __future__ import annotations
 
 import re
+from decimal import ROUND_CEILING, ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Optional
 
 # HTTP(S) URL ending with /browse/PROJECT-123 (Jira-style)
@@ -16,6 +17,9 @@ MENTION_USERNAME_RE = re.compile(
     r"(?<![A-Za-z0-9_.])@([a-z0-9][a-z0-9._-]*)",
     re.IGNORECASE,
 )
+
+# Допустимая сетка оценок: кратно 0.05 (сотые только 00 или 05)
+VOTE_STEP = Decimal("0.05")
 
 
 def extract_jira_url(message: str) -> Optional[str]:
@@ -68,11 +72,83 @@ def mention_user_ids_from_post_props(post: dict) -> list[str]:
     return out
 
 
-def parse_int_vote(message: str) -> Optional[int]:
-    text = (message or "").strip()
-    if not text:
+def _normalize_decimal_separators(raw: str) -> str:
+    """Поддержка `3.14` и `3,14`; при обоих разделителях десятичный — правый (1.234,56 / 1,234.56)."""
+    s = raw.strip().replace(" ", "")
+    if not s:
+        return ""
+    sign = ""
+    if s[0] in "+-":
+        sign = s[0]
+        s = s[1:]
+    if not s:
+        return ""
+    nc = s.count(",")
+    nd = s.count(".")
+    if nc == 0 and nd == 0:
+        return sign + s
+    if nc == 1 and nd == 0:
+        return sign + s.replace(",", ".")
+    if nd == 1 and nc == 0:
+        return sign + s
+    li = max(s.rfind(","), s.rfind("."))
+    intpart = s[:li].replace(".", "").replace(",", "")
+    frac = s[li + 1 :].replace(".", "").replace(",", "")
+    if not intpart and frac:
+        intpart = "0"
+    if not frac:
+        return sign + intpart
+    return sign + intpart + "." + frac
+
+
+def quantize_vote_up(d: Decimal) -> Decimal:
+    """Округление вверх до шага 0.05 (сотые только 00 или 05)."""
+    q = (d / VOTE_STEP).to_integral_value(rounding=ROUND_CEILING)
+    return (q * VOTE_STEP).quantize(VOTE_STEP)
+
+
+def parse_vote(message: str) -> Optional[Decimal]:
+    """
+    Одно число в сообщении; запятая или точка как десятичный разделитель.
+    Любая дробная часть приводится вверх к ближайшему кратному 0.05.
+    """
+    norm = _normalize_decimal_separators(message or "")
+    if not norm or norm in "+-":
         return None
     try:
-        return int(text, 10)
-    except ValueError:
+        d = Decimal(norm)
+    except InvalidOperation:
         return None
+    if not d.is_finite():
+        return None
+    return quantize_vote_up(d)
+
+
+def format_vote(d: Decimal) -> str:
+    """Краткая строка для отображения (5, 2.5, 2.95)."""
+    d = d.quantize(VOTE_STEP)
+    if d == d.to_integral():
+        return str(int(d))
+    s = format(d, "f").rstrip("0").rstrip(".")
+    return s
+
+
+def format_arithmetic_mean(values: list[Decimal]) -> str:
+    """Среднее арифметическое для итога; до сотых, без лишних нулей."""
+    if not values:
+        return ""
+    total = sum(values, Decimal(0))
+    mean = total / Decimal(len(values))
+    q = mean.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    s = format(q, "f").rstrip("0").rstrip(".")
+    return s
+
+
+def parse_int_vote(message: str) -> Optional[int]:
+    """Только целые; для обратной совместимости тестов."""
+    d = parse_vote(message)
+    if d is None:
+        return None
+    if d != d.to_integral():
+        return None
+    return int(d)

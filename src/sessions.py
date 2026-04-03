@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass, field
+from decimal import Decimal
 from typing import Optional
+
+from src.parsing import quantize_vote_up
 
 
 @dataclass
@@ -16,7 +18,7 @@ class PlanningSession:
     organizer_user_id: str
     voter_ids: list[str] = field(default_factory=list)
     username_by_id: dict[str, str] = field(default_factory=dict)
-    votes: dict[str, int] = field(default_factory=dict)
+    votes: dict[str, Decimal] = field(default_factory=dict)
     finalized: bool = False
     # id поста-приглашения в ЛС; ответ с оценкой должен иметь root_id == этому id
     dm_invite_root_by_user: dict[str, str] = field(default_factory=dict)
@@ -92,7 +94,9 @@ class SessionStore:
                 return True
         return False
 
-    def record_vote(self, session: PlanningSession, user_id: str, value: int) -> PlanningSession:
+    def record_vote(
+        self, session: PlanningSession, user_id: str, value: Decimal
+    ) -> PlanningSession:
         session.votes[user_id] = value
         return session
 
@@ -105,7 +109,8 @@ class SessionStore:
         del self._sessions[session.root_post_id]
 
 
-def median_ceil(values: list[int]) -> int:
+def median_ceil_vote(values: list[Decimal]) -> Decimal:
+    """Медиана; при чётном n — среднее двух центральных, затем вверх до шага 0.05."""
     if not values:
         raise ValueError("empty values")
     s = sorted(values)
@@ -113,4 +118,5 @@ def median_ceil(values: list[int]) -> int:
     mid = n // 2
     if n % 2 == 1:
         return s[mid]
-    return math.ceil((s[mid - 1] + s[mid]) / 2)
+    mean = (s[mid - 1] + s[mid]) / Decimal(2)
+    return quantize_vote_up(mean)
