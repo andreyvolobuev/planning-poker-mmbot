@@ -72,6 +72,13 @@ class SessionStore:
     def get_by_root(self, root_post_id: str) -> Optional[PlanningSession]:
         return self._sessions.get(root_post_id)
 
+    def active_sessions(self) -> list[PlanningSession]:
+        return list(self._sessions.values())
+
+    def persist_session(self, root_post_id: str) -> None:
+        """Переопределяется в SqliteBackedSessionStore для записи на диск."""
+        return None
+
     def session_for_dm_invite_thread(
         self, user_id: str, dm_thread_root_id: str
     ) -> Optional[PlanningSession]:

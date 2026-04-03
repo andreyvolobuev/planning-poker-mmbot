@@ -278,6 +278,7 @@ def _launch_planning_round(
         )
 
     _send_dm_invites(ctx, session)
+    ctx.session_store.persist_session(root_post_id)
 
     mentions = " ".join(_mention_label(username_by_id, uid) for uid in voter_ids)
     body_lines: list[str] = []
@@ -411,6 +412,13 @@ def _finalize_session(
     msg = f"{header}\n```\n{body}\n\n{total_line}\n```{extra}"
     _post_in_thread(ctx, session.root_post_id, session.channel_id, msg)
     ctx.session_store.finalize(session)
+
+
+def sweep_all_voted_sessions(ctx: BotContext) -> None:
+    """После рестарта: дожать итог, если все голоса уже были в SQLite до падения."""
+    for session in ctx.session_store.active_sessions():
+        if ctx.session_store.all_voted(session):
+            _finalize_session(ctx, session, forced=False)
 
 
 def handle_channel_finish_command(ctx: BotContext, post: dict[str, Any], data: dict[str, Any]) -> None:

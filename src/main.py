@@ -10,9 +10,10 @@ from mattermostdriver import Driver
 from urllib3.exceptions import InsecureRequestWarning
 
 from src.config import load_settings
-from src.handlers import BotContext, websocket_event_handler
+from src.handlers import BotContext, sweep_all_voted_sessions, websocket_event_handler
 from src.mattermost_client import build_driver
 from src.mattermost_websocket import ServerAuthSSLWebsocket
+from src.session_sqlite import SqliteBackedSessionStore
 from src.sessions import SessionStore
 
 
@@ -48,7 +49,13 @@ def main() -> None:
         log.info("Интеграция с Jira включена (%s).", settings.jira.base_url)
         if not settings.jira.ssl_verify:
             urllib3.disable_warnings(InsecureRequestWarning)
-    store = SessionStore()
+
+    if settings.session_state_path:
+        store = SqliteBackedSessionStore(settings.session_state_path)
+        log.info("Состояние раундов: SQLite %s", settings.session_state_path)
+    else:
+        store = SessionStore()
+
     ctx = BotContext(
         driver=driver,
         bot_id=bot_user_id,
@@ -56,6 +63,7 @@ def main() -> None:
         session_store=store,
         jira=settings.jira,
     )
+    sweep_all_voted_sessions(ctx)
 
     async def on_event(message: str) -> None:
         await websocket_event_handler(ctx, message)

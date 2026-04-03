@@ -33,6 +33,7 @@ class Settings:
     ssl_verify: bool
     ssl_ca_file: str | None
     jira: JiraIntegration | None
+    session_state_path: str | None  # SQLite-файл активных раундов; None = только RAM
 
 
 def _normalize_url(url: str) -> tuple[str, str, str]:
@@ -104,6 +105,9 @@ def load_settings() -> Settings:
 
     jira = _load_jira_integration()
 
+    session_state_raw = os.environ.get("SESSION_STATE_PATH", "").strip()
+    session_state_path = session_state_raw or None
+
     return Settings(
         mattermost_url=url.rstrip("/"),
         mattermost_host=host,
@@ -114,4 +118,5 @@ def load_settings() -> Settings:
         ssl_verify=ssl_verify,
         ssl_ca_file=ca_file,
         jira=jira,
+        session_state_path=session_state_path,
     )
