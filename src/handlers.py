@@ -156,6 +156,28 @@ def _post_in_thread(ctx: BotContext, root_post_id: str, channel_id: str, text: s
     )
 
 
+def _add_reaction(ctx: BotContext, post_id: str, emoji_name: str) -> None:
+    """Добавляет реакцию к посту."""
+    try:
+        ctx.driver.reactions.create_reaction(
+            {
+                "user_id": ctx.bot_id,
+                "post_id": post_id,
+                "emoji_name": emoji_name,
+            }
+        )
+    except Exception:
+        log.warning("Не удалось добавить реакцию %s к посту %s", emoji_name, post_id, exc_info=False)
+
+
+def _remove_reaction(ctx: BotContext, post_id: str, emoji_name: str) -> None:
+    """Удаляет реакцию с поста."""
+    try:
+        ctx.driver.reactions.delete_reaction(ctx.bot_id, post_id, emoji_name)
+    except Exception:
+        log.warning("Не удалось удалить реакцию %s с поста %s", emoji_name, post_id, exc_info=False)
+
+
 def _post_dm_top_level(driver: Driver, channel_id: str, text: str) -> dict[str, Any]:
     return driver.posts.create_post(
         {
@@ -291,6 +313,7 @@ def _launch_planning_round(
 
     _send_dm_invites(ctx, session)
     ctx.session_store.persist_session(root_post_id)
+    _add_reaction(ctx, root_post_id, "warning")
 
     mentions = " ".join(_mention_label(username_by_id, uid) for uid in voter_ids)
     body_lines: list[str] = []
@@ -423,6 +446,8 @@ def _finalize_session(
 
     msg = f"{header}\n```\n{body}\n\n{total_line}\n```{extra}"
     _post_in_thread(ctx, session.root_post_id, session.channel_id, msg)
+    _remove_reaction(ctx, session.root_post_id, "warning")
+    _add_reaction(ctx, session.root_post_id, "white_check_mark")
     ctx.session_store.finalize(session)
 
 
