@@ -41,6 +41,32 @@ def _requests_verify(j: JiraIntegration) -> bool | str:
     return True
 
 
+def post_jira_comment(j: JiraIntegration, issue_key: str, body: str) -> tuple[bool, str]:
+    """POST comment to Jira issue via /rest/api/2/issue/{key}/comment."""
+    url = f"{j.base_url}/rest/api/2/issue/{issue_key}/comment"
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {j.token}",
+    }
+    verify = _requests_verify(j)
+    try:
+        r = requests.post(url, json={"body": body}, headers=headers, verify=verify, timeout=60)
+    except requests.RequestException as e:
+        log.exception("Jira comment post failed issue=%s", issue_key)
+        return False, str(e)
+    if r.status_code in (200, 201):
+        log.info("Jira comment posted issue=%s", issue_key)
+        return True, ""
+    try:
+        detail = r.json()
+    except ValueError:
+        detail = r.text
+    msg = f"HTTP {r.status_code}: {detail}"
+    log.warning("Jira comment error issue=%s: %s", issue_key, msg)
+    return False, msg
+
+
 def sync_story_points_and_estimates(
     j: JiraIntegration,
     issue_key: str,

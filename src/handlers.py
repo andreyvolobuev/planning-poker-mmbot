@@ -12,7 +12,7 @@ from mattermostdriver import Driver
 
 from src import parsing
 from src.config import JiraIntegration
-from src.jira_client import sync_story_points_and_estimates
+from src.jira_client import post_jira_comment, sync_story_points_and_estimates
 from src.sessions import PlanningSession, SessionStore, median_ceil_vote
 
 log = logging.getLogger(__name__)
@@ -259,6 +259,18 @@ def _launch_planning_round(
         return
 
     thread_link = _thread_permalink(ctx, session.team_id, session.root_post_id)
+
+    if not is_reset and ctx.jira:
+        issue_key = parsing.extract_jira_issue_key(jira_url)
+        if issue_key:
+            ok, err = post_jira_comment(
+                ctx.jira,
+                issue_key,
+                f"Обсуждение оценки в Mattermost: {thread_link}",
+            )
+            if not ok:
+                log.warning("Не удалось добавить комментарий в Jira issue=%s: %s", issue_key, err)
+
     participants = ", ".join(_mention_label(username_by_id, uid) for uid in voter_ids)
     if is_reset:
         log.info(
