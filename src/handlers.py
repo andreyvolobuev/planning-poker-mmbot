@@ -706,11 +706,11 @@ def handle_channel_add_command(ctx: BotContext, post: dict[str, Any], data: dict
     _post_in_thread(ctx, root_id, channel_id, f"@{new_username} добавлен в голосование.")
 
 
-def handle_channel_help_command(ctx: BotContext, post: dict[str, Any], data: dict[str, Any]) -> None:
+def handle_channel_commands_command(ctx: BotContext, post: dict[str, Any], data: dict[str, Any]) -> None:
     root_id = (post.get("root_id") or "").strip()
     if not root_id:
         return
-    if (post.get("message") or "").strip().lower() != "/help":
+    if (post.get("message") or "").strip().lower() != "/commands":
         return
 
     channel_id = post.get("channel_id") or data.get("channel_id")
@@ -924,7 +924,7 @@ def handle_posted_message(ctx: BotContext, message: str) -> None:
                 handle_channel_reset_command(ctx, post, data)
                 handle_channel_list_command(ctx, post, data)
                 handle_channel_add_command(ctx, post, data)
-                handle_channel_help_command(ctx, post, data)
+                handle_channel_commands_command(ctx, post, data)
                 handle_channel_agree_command(ctx, post, data)
             else:
                 handle_channel_root_post(ctx, post, data)
