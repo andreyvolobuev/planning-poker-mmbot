@@ -443,12 +443,12 @@ def handle_channel_finish_command(ctx: BotContext, post: dict[str, Any], data: d
         )
         return
 
-    if user_id != session.organizer_user_id:
+    if user_id not in (set(session.voter_ids) | {session.organizer_user_id}):
         _post_in_thread(
             ctx,
             root_id,
             channel_id,
-            "Команду `/finish` может отправить только тот, кто изначально запустил голосование.",
+            "Команду `/finish` могут отправить только участники голосования.",
         )
         return
 
@@ -523,12 +523,14 @@ def handle_channel_reset_command(ctx: BotContext, post: dict[str, Any], data: di
         return
 
     _jira_meta, organizer_id = meta
-    if user_id != organizer_id:
+    sess = ctx.session_store.get_by_root(root_id)
+    voter_ids = sess.voter_ids if sess else []
+    if user_id not in (set(voter_ids) | {organizer_id}):
         _post_in_thread(
             ctx,
             root_id,
             channel_id,
-            "Команду `/reset` может отправить только тот, кто изначально запустил голосование.",
+            "Команду `/reset` могут отправить только участники голосования.",
         )
         return
 
@@ -631,12 +633,14 @@ def handle_channel_agree_command(ctx: BotContext, post: dict[str, Any], data: di
         return
 
     jira_url, organizer_id = meta
-    if user_id != organizer_id:
+    sess = ctx.session_store.get_by_root(root_id)
+    voter_ids = sess.voter_ids if sess else []
+    if user_id not in (set(voter_ids) | {organizer_id}):
         _post_in_thread(
             ctx,
             root_id,
             channel_id,
-            "Команду `/agree` может отправить только тот, кто изначально запустил голосование.",
+            "Команду `/agree` могут отправить только участники голосования.",
         )
         return
 
