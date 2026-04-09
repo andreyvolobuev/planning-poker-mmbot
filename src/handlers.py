@@ -608,6 +608,92 @@ def handle_channel_reset_command(ctx: BotContext, post: dict[str, Any], data: di
     )
 
 
+def handle_channel_add_command(ctx: BotContext, post: dict[str, Any], data: dict[str, Any]) -> None:
+    root_id = (post.get("root_id") or "").strip()
+    if not root_id:
+        return
+    raw_msg = (post.get("message") or "").strip()
+    if not raw_msg.lower().startswith("/add"):
+        return
+
+    tail = raw_msg[4:].strip()
+    channel_id = post.get("channel_id") or data.get("channel_id")
+    if not channel_id:
+        return
+
+    user_id = post.get("user_id")
+    session = ctx.session_store.get_by_root(root_id)
+    if not session:
+        _post_in_thread(ctx, root_id, channel_id, "По этому треду нет активного голосования.")
+        return
+
+    if user_id not in (set(session.voter_ids) | {session.organizer_user_id}):
+        _post_in_thread(ctx, root_id, channel_id, "Команду `/add` могут отправить только участники голосования.")
+        return
+
+    usernames = parsing.extract_usernames_from_message(tail)
+    if not usernames:
+        _post_in_thread(ctx, root_id, channel_id, "Укажите участника: `/add @username`.")
+        return
+
+    username = usernames[0]
+    try:
+        users = ctx.driver.users.get_users_by_usernames([username])
+    except Exception:
+        log.exception("get_users_by_usernames failed for %s", username)
+        _post_in_thread(ctx, root_id, channel_id, f"Не удалось найти пользователя @{username}.")
+        return
+
+    if not isinstance(users, list) or not users:
+        _post_in_thread(ctx, root_id, channel_id, f"Пользователь @{username} не найден.")
+        return
+
+    new_uid = users[0].get("id")
+    new_username = users[0].get("username") or username
+    if not new_uid:
+        _post_in_thread(ctx, root_id, channel_id, f"Не удалось получить ID пользователя @{username}.")
+        return
+    if new_uid == ctx.bot_id:
+        _post_in_thread(ctx, root_id, channel_id, "Нельзя добавить бота в голосование.")
+        return
+    if new_uid in session.voter_ids:
+        _post_in_thread(ctx, root_id, channel_id, f"@{new_username} уже участвует в голосовании.")
+        return
+
+    permalink = _thread_permalink(ctx, session.team_id, session.root_post_id)
+    dm_text = (
+        f"‼️ [Тут]({permalink}) запущено голосование по оценке тикета: {session.jira_url}.\n\n"
+        "Ответь реплаем к этому сообщению оценкой в виде одного числа."
+    )
+    try:
+        dm_ch = ctx.driver.channels.create_direct_message_channel([ctx.bot_id, new_uid])
+        cid = dm_ch.get("id")
+        if not cid:
+            raise RuntimeError("no channel id")
+        created = _post_dm_top_level(ctx.driver, cid, dm_text)
+        pid = created.get("id")
+        if not pid:
+            raise RuntimeError("create_post returned no id")
+        session.dm_invite_root_by_user[new_uid] = pid
+        log.info(
+            "ЛС запрос оценки (add) → участник=@%s | задача=%s | тред_канала=%s | id_приглашения_лс=%s",
+            new_username, session.jira_url, permalink, pid,
+        )
+    except Exception:
+        log.warning("Не удалось отправить ЛС пользователю %s", new_username, exc_info=True)
+        _post_in_thread(
+            ctx, root_id, channel_id,
+            f"Не удалось написать в личку @{new_username} — пользователь не добавлен в голосование. "
+            "Проверьте настройки приватности / кто может вам писать.",
+        )
+        return
+
+    session.voter_ids.append(new_uid)
+    session.username_by_id[new_uid] = new_username
+    ctx.session_store.persist_session(root_id)
+    _post_in_thread(ctx, root_id, channel_id, f"@{new_username} добавлен в голосование.")
+
+
 def handle_channel_agree_command(ctx: BotContext, post: dict[str, Any], data: dict[str, Any]) -> None:
     root_id = (post.get("root_id") or "").strip()
     if not root_id:
@@ -800,6 +886,7 @@ def handle_posted_message(ctx: BotContext, message: str) -> None:
                 handle_channel_finish_command(ctx, post, data)
                 handle_channel_reset_command(ctx, post, data)
                 handle_channel_list_command(ctx, post, data)
+                handle_channel_add_command(ctx, post, data)
                 handle_channel_agree_command(ctx, post, data)
             else:
                 handle_channel_root_post(ctx, post, data)
