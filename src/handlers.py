@@ -694,6 +694,31 @@ def handle_channel_add_command(ctx: BotContext, post: dict[str, Any], data: dict
     _post_in_thread(ctx, root_id, channel_id, f"@{new_username} добавлен в голосование.")
 
 
+def handle_channel_help_command(ctx: BotContext, post: dict[str, Any], data: dict[str, Any]) -> None:
+    root_id = (post.get("root_id") or "").strip()
+    if not root_id:
+        return
+    if (post.get("message") or "").strip().lower() != "/help":
+        return
+
+    channel_id = post.get("channel_id") or data.get("channel_id")
+    if not channel_id:
+        return
+
+    _post_in_thread(
+        ctx,
+        root_id,
+        channel_id,
+        "**Доступные команды:**\n"
+        "- `/finish` — завершить голосование досрочно по имеющимся оценкам\n"
+        "- `/list` — показать, кто уже проголосовал и кто ещё нет\n"
+        "- `/reset` — сбросить все оценки и начать раунд заново\n"
+        "- `/add @username` — добавить участника в текущее голосование\n"
+        "- `/agree <оценка>` — зафиксировать итоговую оценку в Jira (например: `/agree 3` или `/agree 0,5`)\n"
+        "\nКоманды отправляются реплаем в тред с голосованием.",
+    )
+
+
 def handle_channel_agree_command(ctx: BotContext, post: dict[str, Any], data: dict[str, Any]) -> None:
     root_id = (post.get("root_id") or "").strip()
     if not root_id:
@@ -887,6 +912,7 @@ def handle_posted_message(ctx: BotContext, message: str) -> None:
                 handle_channel_reset_command(ctx, post, data)
                 handle_channel_list_command(ctx, post, data)
                 handle_channel_add_command(ctx, post, data)
+                handle_channel_help_command(ctx, post, data)
                 handle_channel_agree_command(ctx, post, data)
             else:
                 handle_channel_root_post(ctx, post, data)
